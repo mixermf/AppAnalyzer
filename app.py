@@ -1,13 +1,14 @@
 import streamlit as st
 import google_play_scraper as gps
 import pandas as pd
-from openai import OpenAI
+from openai import OpenAI  # ← Perplexity совместим с OpenAI SDK
 import psycopg
 import os
 from datetime import datetime
 import json
+import re
 
-# УПРОЩЁННАЯ АВТОРИЗАЦИЯ (работает всегда)
+# УПРОЩЁННАЯ АВТОРИЗАЦИЯ
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
 
@@ -29,15 +30,13 @@ def login_page():
     with col2:
         st.markdown("""
         ### 👋 Добро пожаловать!
-        - Логин: **client**
-        - Пароль: **play123**
+        **client** / **play123**
         """)
 
 if not st.session_state.logged_in:
     login_page()
     st.stop()
 
-# Logout
 if st.sidebar.button("🚪 Выйти"):
     st.session_state.logged_in = False
     st.rerun()
@@ -46,7 +45,7 @@ st.sidebar.success("✅ Авторизован")
 
 # ГЛАВНОЕ ПРИЛОЖЕНИЕ
 st.title("🚀 Play Analyzer Pro")
-st.caption("AI‑анализ конкурентов Google Play")
+st.caption("Perplexity AI + Google Play скрейпинг")
 
 @st.cache_resource
 def init_db():
@@ -57,6 +56,7 @@ def init_db():
             app_id VARCHAR(255) PRIMARY KEY,
             installs TEXT,
             score NUMERIC(3,2),
+            title TEXT,
             last_updated TIMESTAMP
         )
     """)
@@ -70,77 +70,112 @@ def scrape_app(app_id):
             'title': data['title'],
             'installs': data['installs'],
             'score': float(data['score']),
-            'reviews': data['reviews']
+            'reviews': data.get('reviews', 0)
         }
     except Exception as e:
         st.error(f"❌ Скрейпинг: {e}")
         return None
 
-def llm_analyze(app_data, scenario, context):
+def perplexity_analyze(app_data, scenario, context):
+    """Perplexity API"""
     try:
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        prompt = f"""
-        App: {app_data['title']} ({app_data['installs']}, {app_data['score']}*)
-        Scenario: {scenario}
-        Context: {context}
-        JSON: {{"market_fit":8,"recommendations":["1","2","3"]}}
-        """
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}]
+        client = OpenAI(
+            api_key=os.getenv("PERPLEXITY_API_KEY"),
+            base_url="https://api.perplexity.ai"  # ← Perplexity endpoint
         )
-        return json.loads(response.choices[0].message.content)
+        
+        prompt = f"""
+        Анализируй Android app для Google Play:
+        Название: {app_data['title']}
+        Установки: {app_data['installs']}
+        Рейтинг: {app_data['score']}*
+        Отзывов: {app_data['reviews']}
+        Сценарий: {scenario}
+        Контекст: {context}
+        
+        Верни ТОЛЬКО JSON:
+        {{
+            "market_fit": 8,
+            "recommendations": [
+                "Конкретная рекомендация 1",
+                "Конкретная рекомендация 2", 
+                "Конкретная рекомендация 3"
+            ]
+        }}
+        """
+        
+        response = client.chat.completions.create(
+            model="llama-3.1-sonar-small-128k-online",  # Perplexity Sonar
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1
+        )
+        
+        # Извлекаем JSON из ответа
+        content = response.choices[0].message.content
+        json_match = re.search(r'\{.*\}', content, re.DOTALL)
+        if json_match:
+            return json.loads(json_match.group())
+        else:
+            st.warning("JSON не найден, используем мок")
+            return {"market_fit": 7, "recommendations": ["Perplexity OK", "Анализ работает", "Данные собраны"]}
+            
     except Exception as e:
-        return {"market_fit": 5, "recommendations": ["Тест OK", "LLM недоступен", "Данные собраны"]}
+        st.error(f"❌ Perplexity: {e}")
+        return {"market_fit": 5, "recommendations": ["API недоступен", "Скрейпинг работает", "Кэш активен"]}
 
 # Sidebar
 with st.sidebar:
-    st.header("⚙️ Настройки")
+    st.header("⚙️ Анализ")
     scenario = st.selectbox("Сценарий", ["competitor", "niche", "validate"])
     app_id = st.text_input("App ID", value="com.whatsapp")
-    context = st.text_area("Идея/контекст", "Моя идея...")
+    context = st.text_area("Идея/контекст", "Моя идея для игры...")
     
     if st.button("🔍 Анализировать", type="primary"):
-        with st.spinner("⏳ Работаем..."):
+        with st.spinner("⏳ Скрейпинг → Perplexity → Анализ..."):
             conn = init_db()
             
-            # КЭШ (24ч)
+            # КЭШ CHECK (24ч)
             with conn.cursor() as cur:
                 cur.execute("SELECT * FROM app_meta WHERE app_id = %s", (app_id,))
                 cached = cur.fetchone()
                 
-                if cached and (datetime.now() - cached[3]).seconds < 86400:
+                if cached and (datetime.now() - cached[4]).seconds < 86400:
                     app_data = {
-                        'title': f"Cached: {app_id}",
+                        'title': cached[3],
                         'installs': cached[1],
-                        'score': float(cached[2])
+                        'score': float(cached[2]),
+                        'reviews': 0
                     }
-                    st.sidebar.success("✅ Кэш свежий")
+                    st.sidebar.success("✅ Кэш (24ч)")
                 else:
+                    # СКРЕЙПИНГ
                     app_data_raw = scrape_app(app_id)
                     if app_data_raw:
                         cur.execute("""
-                            INSERT INTO app_meta (app_id, installs, score, last_updated)
-                            VALUES (%s, %s, %s, %s) ON CONFLICT (app_id) 
-                            DO UPDATE SET installs=%s, score=%s, last_updated=%s
+                            INSERT INTO app_meta (app_id, installs, score, title, last_updated)
+                            VALUES (%s, %s, %s, %s, %s) ON CONFLICT (app_id) 
+                            DO UPDATE SET installs=%s, score=%s, title=%s, last_updated=%s
                         """, (app_id, app_data_raw['installs'], app_data_raw['score'], 
-                              datetime.now(), app_data_raw['installs'], app_data_raw['score'], datetime.now()))
+                              app_data_raw['title'], datetime.now(),
+                              app_data_raw['installs'], app_data_raw['score'], 
+                              app_data_raw['title'], datetime.now()))
                         conn.commit()
                         app_data = app_data_raw
-                        st.sidebar.success("✅ Данные обновлены")
+                        st.sidebar.success("✅ Свежие данные")
                     else:
-                        st.error("Не удалось собрать данные")
+                        st.error("❌ Скрейпинг failed")
                         st.stop()
             
-            # LLM
-            analysis = llm_analyze(app_data, scenario, context)
+            # PERPLEXITY АНАЛИЗ
+            analysis = perplexity_analyze(app_data, scenario, context)
             st.session_state.analysis = {
                 'app_data': app_data,
                 'analysis': analysis,
                 'app_id': app_id
             }
+            st.balloons()  # 🎉
 
-# Результаты
+# РЕЗУЛЬТАТЫ
 if 'analysis' in st.session_state:
     result = st.session_state.analysis
     
@@ -149,17 +184,19 @@ if 'analysis' in st.session_state:
     col2.metric("📱 Installs", result['app_data']['installs'])
     col3.metric("⭐ Rating", f"{result['app_data']['score']:.1f}")
     
-    st.subheader("🎯 Рекомендации")
+    st.success(f"✅ Анализ {result['app_id']} завершён")
+    
+    st.subheader("🎯 Рекомендации Perplexity AI")
     for i, rec in enumerate(result['analysis']['recommendations'], 1):
         st.info(f"{i}. {rec}")
     
-    # История
-    st.subheader("📈 История")
+    # ИСТОРИЯ
+    st.subheader("📈 База данных")
     try:
         conn = init_db()
         df = pd.read_sql("SELECT * FROM app_meta ORDER BY last_updated DESC LIMIT 10", conn)
         st.dataframe(df)
-    except:
-        st.info("Первые записи появятся после анализа")
+    except Exception as e:
+        st.info(f"База: {e}")
 
-st.caption("✅ v1.0 | Railway | Кэш + LLM")
+st.caption("🔥 Perplexity AI + Google Play | Railway v1.0")
