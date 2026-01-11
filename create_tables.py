@@ -42,8 +42,7 @@ DDL = [
     """,
 
     # 2) app_meta_info
-    """
-    DROP TABLE app_meta_info;
+    """    
     CREATE TABLE IF NOT EXISTS app_meta_info (
         app_id VARCHAR(255) PRIMARY KEY,
 
