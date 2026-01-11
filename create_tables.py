@@ -43,7 +43,7 @@ DDL = [
 
     # 2) app_meta_info
     """
-    CREATE TABLE IF NOT EXISTS app_meta_info (
+    CREATE OR REPLACE TABLE app_meta_info (
         app_id VARCHAR(255) PRIMARY KEY,
 
         developer_key VARCHAR(255) REFERENCES app_developer(developer_key),
