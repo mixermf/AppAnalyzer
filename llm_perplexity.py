@@ -65,7 +65,7 @@ def analyze_app(*, app_id: str, meta: dict[str, Any], scenario: str, user_contex
     )
 
     response = client.chat.completions.create(
-        model=os.getenv("PERPLEXITY_MODEL") or "llama-3.1-sonar-small-128k-online",
+        model=os.getenv("PERPLEXITY_MODEL") or "sonar-pro",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.2,
     )
