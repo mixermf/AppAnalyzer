@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from datetime import date, datetime
 from dataclasses import dataclass
 from typing import Any
 
@@ -40,6 +41,12 @@ def _as_int(v: Any) -> int | None:
         return None
 
 
+def _json_default(obj: Any):
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    return str(obj)
+
+
 def analyze_app(*, app_id: str, meta: dict[str, Any], scenario: str, user_context: str | None) -> AnalysisResult:
     api_key = os.getenv("PERPLEXITY_API_KEY")
     if not api_key:
@@ -54,7 +61,7 @@ def analyze_app(*, app_id: str, meta: dict[str, Any], scenario: str, user_contex
         f"User context: {user_context or ''}. "
         f"App id: {app_id}. "
         "App data: "
-        + json.dumps(meta, ensure_ascii=False)
+        + json.dumps(meta, ensure_ascii=False, default=_json_default)
     )
 
     response = client.chat.completions.create(
