@@ -76,19 +76,29 @@ class Database:
         return psycopg.connect(self.database_url)
 
     def get_latest_analysis(self, *, app_id: str, scenario: str | None, client_id: str | None) -> AnalysisRow | None:
+        where = ["app_id = %s"]
+        params: list[Any] = [app_id]
+
+        if scenario is not None and scenario != "":
+            where.append("scenario = %s")
+            params.append(scenario)
+
+        if client_id is not None and client_id != "":
+            where.append("client_id = %s")
+            params.append(client_id)
+
         sql = """
             SELECT id, app_id, client_id, scenario, user_context, prompt_used,
                    market_fit, recommendations, raw_llm_response, analyzed_at
             FROM app_analysis
-            WHERE app_id = %s
-              AND (%s IS NULL OR scenario = %s)
-              AND (%s IS NULL OR client_id = %s)
+            WHERE {where_clause}
             ORDER BY analyzed_at DESC
             LIMIT 1
-        """
+        """.format(where_clause=" AND ".join(where))
+
         with self.connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(sql, (app_id, scenario, scenario, client_id, client_id))
+                cur.execute(sql, tuple(params))
                 row = cur.fetchone()
                 if not row:
                     return None
